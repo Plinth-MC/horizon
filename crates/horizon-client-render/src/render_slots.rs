@@ -4,6 +4,8 @@ pub use crate::render_views::{
     WorldView, WorldViewDrawn, WorldViewRefusal, WorldViewRefusalReason, WorldViews,
 };
 use glam::{DVec3, Mat4};
+/// What native mods may ask of Vulkan before the device opens, and its raw handles after.
+pub use horizon_hdr::vulkan;
 use std::sync::OnceLock;
 pub struct WorldDrawn<'a> {
     pub device: &'a wgpu::Device,
@@ -60,6 +62,8 @@ pub struct Slots {
     pub hand_drawn: for<'a> fn(&mut HandDrawn<'a>),
     pub render_needs: fn(&mut RenderNeeds),
     pub world_drawn_hooked: fn() -> bool,
+    /// Asked once before the Vulkan instance and device are created.
+    pub vulkan_device: fn(&mut vulkan::VulkanRequest),
 }
 static SLOTS: OnceLock<Slots> = OnceLock::new();
 pub fn install(slots: Slots) {
@@ -99,4 +103,14 @@ pub fn world_view_drawn(view: &mut WorldViewDrawn<'_>) {
     if let Some(s) = SLOTS.get() {
         (s.world_view_drawn)(view);
     }
+}
+
+/// What the provider's mods ask of Vulkan: empty without a provider, so the instance and the
+/// device open as wgpu opens them.
+pub fn vulkan_request() -> vulkan::VulkanRequest {
+    let mut request = vulkan::VulkanRequest::default();
+    if let Some(s) = SLOTS.get() {
+        (s.vulkan_device)(&mut request);
+    }
+    request
 }

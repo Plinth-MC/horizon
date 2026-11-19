@@ -192,8 +192,8 @@ pub(super) async fn open_adapter(
         experimental_features: mesh_shader::experimental(features),
         ..Default::default()
     };
-    // Vulkan opens with what the mods asked for (`native_vulkan_device`), where offered;
-    // with nothing asked, as before. Other backends: `None`, wgpu opens it.
+    // Vulkan opens with what the mods asked for (`mod_render::render::vulkan_device`),
+    // where offered; with nothing asked, as before. Other backends: `None`, wgpu opens it.
     let opened = horizon_hdr::vulkan::open_device(adapter, &desc, vulkan);
     let opened = match opened {
         Some(opened) => opened,

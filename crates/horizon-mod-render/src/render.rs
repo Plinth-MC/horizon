@@ -8,7 +8,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
 pub use generated::{
-    HandDrawnEvent, RenderNeedsEvent, WorldDrawnEvent, WorldViewDrawnEvent, WorldViewsEvent,
+    HandDrawnEvent, RenderNeedsEvent, VulkanDeviceEvent, WorldDrawnEvent, WorldViewDrawnEvent,
+    WorldViewsEvent,
 };
 pub use wgpu;
 
@@ -159,6 +160,28 @@ pub fn needs() -> RenderNeeds {
     let mut needs = RenderNeeds::default();
     render_needs(&mut needs);
     needs
+}
+
+/// The Vulkan side of the game's device: what a mod asks of it before it opens
+/// ([`VulkanRequest`], [`vulkan_device`]), what was enabled (`vulkan::granted()`), and its raw
+/// handles once it is up (`vulkan::handles(device)`, `vulkan::image(texture)`).
+pub use horizon_client_render::render_slots::vulkan::{self, VulkanRequest};
+
+/// Asked once, before the Vulkan instance and device are created (not on other backends): add
+/// the instance and device extensions and features your mod needs to [`VulkanRequest`]. Each one
+/// is enabled only where the driver offers it, and a missing one is no error: read what was
+/// enabled from `vulkan::granted()`, and the device's raw handles from `vulkan::handles(device)`.
+#[inline(never)]
+#[horizon_mod_api_macros::replaceable]
+pub fn vulkan_device(request: &mut VulkanRequest) {
+    let _ = request;
+}
+
+/// What the mods ask of Vulkan ([`vulkan_device`]).
+pub fn vulkan_request() -> VulkanRequest {
+    let mut request = VulkanRequest::default();
+    vulkan_device(&mut request);
+    request
 }
 
 /// The limits of [`world_views`] (the engine's own constants) and why a view is refused.
@@ -446,5 +469,6 @@ pub fn install() {
             })
         },
         world_drawn_hooked,
+        vulkan_device: |request| vulkan_device(request),
     });
 }

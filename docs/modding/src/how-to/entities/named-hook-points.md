@@ -19,6 +19,12 @@ Implement the `render_needs` callback to set `RenderNeeds` requests for world de
 and entity geometry; these requests feed the engine's frame requirements so it
 retains the resources your drawing callbacks borrow.
 
+Implement `vulkan_device` to add Vulkan instance and device extensions and features to
+`VulkanRequest` before the game creates its Vulkan instance and device (an upscaler,
+a latency layer or an OpenXR runtime needs them). Each is enabled only where the
+driver offers it; read what was enabled from `vulkan::granted()` and the device's raw
+handles from `vulkan::handles(device)`. See the generated `vulkan_device` hook notes.
+
 ## Leaving a bed
 
 `player_bed_leave` is a server-side, listen-only notice. It runs before the

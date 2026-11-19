@@ -1,7 +1,7 @@
 //! What native mods may ask of Vulkan, and the raw handles they get back.
 //!
 //! Before the instance and the device are created the renderer collects a
-//! [`VulkanRequest`] from the mods (horizon-client-render's `native_vulkan_device`
+//! [`VulkanRequest`] from the mods (horizon-mod-render's `mod_render::render::vulkan_device`
 //! hook). Each extension or feature in it is enabled only when the driver offers
 //! it: what is missing is logged and left out, never an error. Once the device
 //! exists, [`handles`], [`image`], [`view`] and [`format`] hand out its raw
@@ -479,8 +479,10 @@ mod tests {
             c"VK_EXT_memory_budget",
             c"VK_KHR_shader_clock",
         ];
-        let mut request = VulkanRequest::default();
-        request.device_extensions = asked.to_vec();
+        let request = VulkanRequest {
+            device_extensions: asked.to_vec(),
+            ..Default::default()
+        };
         let (device, _queue) = open_device(&adapter, &Default::default(), &request)
             .expect("a Vulkan adapter opens here")
             .expect("an extension that is not offered is no error");
