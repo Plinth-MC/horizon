@@ -24,12 +24,86 @@ pub struct VulkanRequest {
     pub timeline_semaphore: bool,
     /// `VK_KHR_present_id` with its `presentId` feature turned on.
     pub present_id: bool,
+    /// The GPU to render on, when a mod must have a given one: an OpenXR runtime renders on the
+    /// `VkPhysicalDevice` `xrGetVulkanGraphicsDeviceKHR` names, and a device on another GPU
+    /// can't share its swapchain images. Named by its `VkPhysicalDeviceIDProperties` ids, which
+    /// hold across instances (a `VkPhysicalDevice` handle does not). When no Vulkan adapter has
+    /// it, a warning is logged and the game's own choice stands. `None`: the game chooses.
+    pub physical_device: Option<VulkanDeviceId>,
+}
+
+/// A physical device as [`VulkanRequest::physical_device`] names it.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VulkanDeviceId {
+    /// `VkPhysicalDeviceIDProperties::deviceUUID`.
+    Uuid([u8; 16]),
+    /// `VkPhysicalDeviceIDProperties::deviceLUID` (Windows), matched only where the driver
+    /// says it is valid (`deviceLUIDValid`).
+    Luid([u8; 8]),
+}
+
+/// The ids a Vulkan adapter's physical device reports ([`device_ids`]).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VulkanDeviceIds {
+    /// `deviceUUID`.
+    pub uuid: [u8; 16],
+    /// `deviceLUID`, when `deviceLUIDValid`.
+    pub luid: Option<[u8; 8]>,
+}
+
+impl VulkanDeviceIds {
+    /// Ids as a driver reports them, for building one outside this crate (tests, mocks).
+    pub fn new(uuid: [u8; 16], luid: Option<[u8; 8]>) -> Self {
+        Self { uuid, luid }
+    }
+}
+
+impl VulkanDeviceId {
+    /// Whether a physical device with `ids` is this one.
+    pub fn matches(&self, ids: &VulkanDeviceIds) -> bool {
+        match self {
+            Self::Uuid(uuid) => ids.uuid == *uuid,
+            Self::Luid(luid) => ids.luid == Some(*luid),
+        }
+    }
+}
+
+/// The first of `adapters` (their ids, `None` for one that is not Vulkan or can't say) that is
+/// `want`.
+pub fn pick_device(adapters: &[Option<VulkanDeviceIds>], want: &VulkanDeviceId) -> Option<usize> {
+    adapters
+        .iter()
+        .position(|ids| ids.as_ref().is_some_and(|ids| want.matches(ids)))
+}
+
+/// The adapter of `adapters` that `request` names ([`VulkanRequest::physical_device`]), or
+/// `None` when it names none or none of them is it (then it logs a warning).
+pub fn wanted_adapter(adapters: &[wgpu::Adapter], request: &VulkanRequest) -> Option<usize> {
+    let want = request.physical_device.as_ref()?;
+    let ids: Vec<_> = adapters.iter().map(device_ids).collect();
+    let found = pick_device(&ids, want);
+    if found.is_none() {
+        log::warn!(
+            "Vulkan physical device {want:?} asked by a mod is not among this machine's {} \
+             Vulkan adapter(s); the game picks its own",
+            ids.iter().flatten().count()
+        );
+    }
+    found
+}
+
+/// The ids of `adapter`'s physical device; `None` unless it is a Vulkan adapter on a Vulkan 1.1
+/// instance and device.
+pub fn device_ids(adapter: &wgpu::Adapter) -> Option<VulkanDeviceIds> {
+    imp::device_ids(adapter)
 }
 
 impl VulkanRequest {
     /// Nothing asked for: the instance and the device open as they would with no mod.
     pub fn is_empty(&self) -> bool {
-        self.instance_extensions.is_empty() && !self.asks_device()
+        self.instance_extensions.is_empty() && !self.asks_device() && self.physical_device.is_none()
     }
 
     fn asks_device(&self) -> bool {
@@ -72,6 +146,9 @@ pub struct VulkanHandles {
     pub get_instance_proc_addr: usize,
     /// Every device extension the device was created with (wgpu's own too).
     pub device_extensions: Vec<&'static CStr>,
+    /// The physical device's ids (what [`VulkanRequest::physical_device`] matches), when the
+    /// driver reports them.
+    pub device_ids: Option<VulkanDeviceIds>,
 }
 
 /// The `VkImage` of a wgpu texture and the `VkFormat` it was created with.
@@ -210,7 +287,7 @@ pub fn format(format: wgpu::TextureFormat) -> Option<i32> {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use super::{VulkanHandles, VulkanRequest, grant, state};
+    use super::{VulkanDeviceIds, VulkanHandles, VulkanRequest, grant, state};
     use ash::vk::{self, Handle};
     use std::ffi::CStr;
     use wgpu::hal::api::Vulkan;
@@ -364,6 +441,44 @@ mod imp {
             queue_index: hal.queue_index(),
             get_instance_proc_addr: shared.entry().static_fn().get_instance_proc_addr as usize,
             device_extensions: hal.enabled_device_extensions().to_vec(),
+            device_ids: ids(
+                shared.raw_instance(),
+                shared.instance_api_version(),
+                hal.raw_physical_device(),
+            ),
+        })
+    }
+
+    pub fn device_ids(adapter: &wgpu::Adapter) -> Option<VulkanDeviceIds> {
+        // Safety: read-only queries of the adapter's own physical device.
+        let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
+        let shared = hal.shared_instance();
+        ids(
+            shared.raw_instance(),
+            shared.instance_api_version(),
+            hal.raw_physical_device(),
+        )
+    }
+
+    /// `VkPhysicalDeviceIDProperties` of `physical`: core in Vulkan 1.1, which the instance and
+    /// the device must both have.
+    fn ids(
+        instance: &ash::Instance,
+        instance_api: u32,
+        physical: vk::PhysicalDevice,
+    ) -> Option<VulkanDeviceIds> {
+        // Safety: a query of a physical device of this instance.
+        let api = unsafe { instance.get_physical_device_properties(physical) }.api_version;
+        if instance_api.min(api) < vk::API_VERSION_1_1 {
+            return None;
+        }
+        let mut id = vk::PhysicalDeviceIDProperties::default();
+        let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+        // Safety: a 1.1 instance's query of its own physical device.
+        unsafe { instance.get_physical_device_properties2(physical, &mut properties) };
+        Some(VulkanDeviceIds {
+            uuid: id.device_uuid,
+            luid: (id.device_luid_valid == vk::TRUE).then_some(id.device_luid),
         })
     }
 
@@ -390,7 +505,7 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{VulkanHandles, VulkanRequest};
+    use super::{VulkanDeviceIds, VulkanHandles, VulkanRequest};
     use std::ffi::CStr;
 
     pub fn create_instance(
@@ -407,6 +522,9 @@ mod imp {
         None
     }
     pub fn handles(_device: &wgpu::Device) -> Option<VulkanHandles> {
+        None
+    }
+    pub fn device_ids(_adapter: &wgpu::Adapter) -> Option<VulkanDeviceIds> {
         None
     }
     pub fn image(_texture: &wgpu::Texture) -> Option<u64> {
@@ -437,6 +555,47 @@ mod tests {
     #[test]
     fn nothing_offered_grants_nothing_without_failing() {
         assert!(grant("instance", &[], &[c"VK_HORIZON_missing"]).is_empty());
+    }
+
+    #[test]
+    fn the_physical_device_asked_for_is_picked_by_uuid_or_valid_luid() {
+        let a = VulkanDeviceIds::new([1; 16], Some([1; 8]));
+        let b = VulkanDeviceIds::new([2; 16], None);
+        let c = VulkanDeviceIds::new([3; 16], Some([3; 8]));
+        let adapters = [None, Some(a), Some(b), Some(c)];
+        assert_eq!(
+            pick_device(&adapters, &VulkanDeviceId::Uuid([2; 16])),
+            Some(2)
+        );
+        assert_eq!(
+            pick_device(&adapters, &VulkanDeviceId::Luid([3; 8])),
+            Some(3)
+        );
+        // b reports no valid LUID: an all-zero LUID never matches it.
+        assert_eq!(pick_device(&adapters, &VulkanDeviceId::Luid([0; 8])), None);
+        assert_eq!(pick_device(&adapters, &VulkanDeviceId::Uuid([9; 16])), None);
+        assert_eq!(pick_device(&[], &VulkanDeviceId::Uuid([1; 16])), None);
+    }
+
+    #[test]
+    fn asking_for_a_physical_device_is_asking() {
+        let request = VulkanRequest {
+            physical_device: Some(VulkanDeviceId::Uuid([7; 16])),
+            ..Default::default()
+        };
+        assert!(!request.is_empty());
+        // It is no device extension or feature: the device opens as it would.
+        assert!(!request.asks_device());
+    }
+
+    #[test]
+    fn no_physical_device_asked_picks_none_and_none_found_falls_back() {
+        assert_eq!(wanted_adapter(&[], &VulkanRequest::default()), None);
+        let request = VulkanRequest {
+            physical_device: Some(VulkanDeviceId::Uuid([0xAB; 16])),
+            ..Default::default()
+        };
+        assert_eq!(wanted_adapter(&[], &request), None);
     }
 
     /// A Vulkan adapter of this machine, if it has one (tests skip without a GPU).
@@ -496,6 +655,7 @@ mod tests {
         }
         assert!(handles.instance != 0 && handles.physical_device != 0 && handles.device != 0);
         assert!(handles.queue != 0 && handles.get_instance_proc_addr != 0);
+        assert_eq!(handles.device_ids, device_ids(&adapter));
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -515,6 +675,39 @@ mod tests {
         assert_ne!(image.image, 0);
         assert_eq!(image.format, ash::vk::Format::R8G8B8A8_UNORM.as_raw());
         assert_ne!(view(&texture.create_view(&Default::default())).unwrap(), 0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn an_adapter_is_found_by_its_own_ids() {
+        let Some(adapter) = vulkan_adapter() else {
+            eprintln!("no Vulkan adapter: skipped");
+            return;
+        };
+        let Some(ids) = device_ids(&adapter) else {
+            eprintln!("no Vulkan 1.1 adapter: skipped");
+            return;
+        };
+        let adapters = [adapter];
+        let by_uuid = VulkanRequest {
+            physical_device: Some(VulkanDeviceId::Uuid(ids.uuid)),
+            ..Default::default()
+        };
+        assert_eq!(wanted_adapter(&adapters, &by_uuid), Some(0));
+        if let Some(luid) = ids.luid {
+            let by_luid = VulkanRequest {
+                physical_device: Some(VulkanDeviceId::Luid(luid)),
+                ..Default::default()
+            };
+            assert_eq!(wanted_adapter(&adapters, &by_luid), Some(0));
+        }
+        let mut other = ids.uuid;
+        other[0] ^= 0xFF;
+        let elsewhere = VulkanRequest {
+            physical_device: Some(VulkanDeviceId::Uuid(other)),
+            ..Default::default()
+        };
+        assert_eq!(wanted_adapter(&adapters, &elsewhere), None);
     }
 
     #[cfg(not(target_os = "macos"))]

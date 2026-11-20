@@ -14,6 +14,11 @@ extensions the game doesn't enable, and the raw objects of the game's device. Ad
 - `instance_extensions`, `device_extensions`: names such as `c"VK_KHR_push_descriptor"`. Push them; leave the others'.
 - `timeline_semaphore`: wgpu turns timeline semaphores on wherever the GPU has them; asking only reports it.
 - `present_id`: `VK_KHR_present_id` with its `presentId` feature on.
+- `physical_device`: the GPU to render on, as `vulkan::VulkanDeviceId::Uuid(deviceUUID)` or `Luid(deviceLUID)` from
+  `VkPhysicalDeviceIDProperties`. An OpenXR runtime renders on the `VkPhysicalDevice` that
+  `xrGetVulkanGraphicsDeviceKHR` names; read its ids and ask for it here, since a handle does not hold across
+  instances. When no Vulkan adapter is it, or it can't present to the window, a warning is logged and the game's own
+  choice stands; `vulkan::handles(&device).device_ids` says which GPU the device is on.
 
 Each is enabled only where the driver offers it. A missing one is no error: it's logged ("Vulkan device extension
 "X" asked by a mod is not offered here") and left out, and the game starts as it would without it. Read what was

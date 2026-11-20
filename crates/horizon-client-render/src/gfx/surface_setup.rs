@@ -93,6 +93,54 @@ pub(super) fn pick_adapter(adapters: &[AdapterChoice], allow_cpu: bool) -> Optio
         .min_by_key(|(_, a)| rank(a.kind))
         .map(|(i, _)| i)
 }
+/// The adapter a native mod asked for (`VulkanRequest::physical_device`, from
+/// `mod_render::render::vulkan_device`) in place of `chosen`: an OpenXR runtime renders on one
+/// GPU, and the game's device must be on it to share the runtime's swapchain images. `chosen`
+/// stays, with a warning, when the request names no adapter of `instance`, when `chosen` is
+/// not Vulkan, or when the named adapter can't present to the window `surface` (none
+/// offscreen); with nothing asked it stays without a word.
+pub(super) async fn wanted_adapter(
+    instance: &wgpu::Instance,
+    surface: Option<&wgpu::Surface<'static>>,
+    chosen: wgpu::Adapter,
+    vulkan: &horizon_hdr::vulkan::VulkanRequest,
+) -> wgpu::Adapter {
+    let Some(want) = vulkan.physical_device else {
+        return chosen;
+    };
+    let info = chosen.get_info();
+    if info.backend != wgpu::Backend::Vulkan {
+        log::warn!(
+            "Vulkan physical device {want:?} asked by a mod: the renderer is on {:?}, keeping {}",
+            info.backend,
+            info.name
+        );
+        return chosen;
+    }
+    if horizon_hdr::vulkan::device_ids(&chosen).is_some_and(|ids| want.matches(&ids)) {
+        return chosen;
+    }
+    let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+    let Some(found) = horizon_hdr::vulkan::wanted_adapter(&adapters, vulkan) else {
+        return chosen;
+    };
+    let found = adapters[found].clone();
+    if surface.is_some_and(|surface| surface.get_capabilities(&found).formats.is_empty()) {
+        log::warn!(
+            "Vulkan physical device {want:?} asked by a mod ({}) can't present to the window; \
+             keeping {}",
+            found.get_info().name,
+            info.name
+        );
+        return chosen;
+    }
+    log::info!(
+        "Horizon renderer: a mod asked for {} (Vulkan physical device {want:?}) in place of {}",
+        found.get_info().name,
+        info.name
+    );
+    found
+}
 /// Why an adapter gave no device: it can't present to the window, so another adapter of
 /// the backend may, or another failure.
 pub(super) enum AdapterFailure {

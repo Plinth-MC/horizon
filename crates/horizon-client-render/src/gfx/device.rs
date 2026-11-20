@@ -549,6 +549,10 @@ async fn open_backend(
     };
     let dxc_found = dxc.is_some();
     let (instance, surface, adapter) = dxc.unwrap_or((instance, surface, adapter));
+    // A mod that must render on one GPU (an OpenXR runtime's) names it in its Vulkan request;
+    // the adapter chosen above stays when this backend has no such adapter.
+    let adapter =
+        surface_setup::wanted_adapter(&instance, surface.as_ref(), adapter, &vulkan).await;
     if adapter.get_info().backend == wgpu::Backend::Dx12 {
         crate::crash::set_detail(
             "DirectX 12 shader compiler",
