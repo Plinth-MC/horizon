@@ -654,6 +654,11 @@ pub struct Queue {
     relay_semaphores: Mutex<RelaySemaphores>,
     signal_semaphores: Mutex<SemaphoreList>,
     wait_semaphores: Mutex<SemaphoreList>,
+    /// Horizon's change: held around every `vkQueueSubmit`, `vkQueuePresentKHR` and
+    /// `vkQueueWaitIdle` on `raw`, and by [`Queue::with_raw`], so code outside wgpu (an OpenXR
+    /// runtime's `xrEndFrame`) can use the queue with the external synchronization Vulkan
+    /// requires.
+    raw_lock: Mutex<()>,
 }
 
 impl fmt::Debug for Queue {
@@ -665,6 +670,7 @@ impl fmt::Debug for Queue {
             relay_semaphores: _,
             signal_semaphores: _,
             wait_semaphores: _,
+            raw_lock: _,
         } = self;
         f.debug_struct("Queue")
             .field("family_index", family_index)
@@ -675,6 +681,14 @@ impl fmt::Debug for Queue {
 impl Queue {
     pub fn as_raw(&self) -> vk::Queue {
         self.raw
+    }
+
+    /// Runs `f` with the raw queue while no submit, present or wait-idle of this queue runs
+    /// (Horizon's change). `f` must not submit or present through wgpu on this queue: the lock
+    /// is not reentrant, so that deadlocks.
+    pub fn with_raw<R>(&self, f: impl FnOnce(vk::Queue) -> R) -> R {
+        let _guard = self.raw_lock.lock();
+        f(self.raw)
     }
 }
 
@@ -1487,6 +1501,7 @@ impl crate::Queue for Queue {
         );
 
         profiling::scope!("vkQueueSubmit");
+        let _raw = self.raw_lock.lock();
         unsafe {
             self.device
                 .raw
@@ -1502,6 +1517,7 @@ impl crate::Queue for Queue {
         texture: SurfaceTexture,
     ) -> Result<(), crate::SurfaceError> {
         let mut swapchain = surface.swapchain.write();
+        let _raw = self.raw_lock.lock();
 
         unsafe { swapchain.as_mut().unwrap().present(self, texture) }
     }
@@ -1511,6 +1527,7 @@ impl crate::Queue for Queue {
     }
 
     unsafe fn wait_for_idle(&self) -> Result<(), crate::DeviceError> {
+        let _raw = self.raw_lock.lock();
         unsafe { self.device.raw.queue_wait_idle(self.raw) }
             .map_err(map_host_device_oom_and_lost_err)
     }

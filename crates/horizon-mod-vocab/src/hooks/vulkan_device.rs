@@ -39,10 +39,15 @@ The raw objects come from `mod_render::render::vulkan`, which keeps the unsafe c
   layout of its last use, so make a render pass into it the last use when the other side expects
   `COLOR_ATTACHMENT_OPTIMAL` (OpenXR does on `xrReleaseSwapchainImage`). Keep the image alive until the GPU is done
   with the texture.
+- `vulkan::with_raw_queue(&queue, |raw| ...)`: the raw `VkQueue` while no wgpu submit, present or wait-idle runs on
+  it, for code that submits on the game's queue itself (OpenXR's `xrBeginFrame`, `xrEndFrame` and
+  `xrReleaseSwapchainImage` with a Vulkan binding). Keep the closure short and never submit or present through
+  wgpu inside it: the lock is not reentrant. wgpu's `vkDeviceWaitIdle` while it recreates the window swapchain does
+  not take the lock.
 
-The game owns all of them: never destroy one, and use them only while the `wgpu::Device` or texture lives. Submit to
-the queue only on the render thread, from a render hook: Vulkan queues need external synchronisation, and the game
-submits there too."#]
+The game owns all of them: never destroy one, and use them only while the `wgpu::Device` or texture lives. Use the raw
+queue only inside `vulkan::with_raw_queue`: Vulkan queues need external synchronisation, and wgpu submits and
+presents on it from more than one thread."#]
     #[hook(
         side = "client",
         contract = "collect",

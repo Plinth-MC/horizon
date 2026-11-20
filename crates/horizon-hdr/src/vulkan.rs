@@ -340,6 +340,19 @@ pub unsafe fn texture_from_vk_image(
     unsafe { imp::texture_from_vk_image(device, image, desc) }
 }
 
+/// Runs `f` with the raw `VkQueue` of `queue` (as its handle value) while no wgpu submit,
+/// present or wait-idle runs on it, so a runtime that submits on the game's queue (OpenXR's
+/// `xrBeginFrame`, `xrEndFrame`, `xrReleaseSwapchainImage` with a Vulkan graphics binding) gets
+/// the external synchronization Vulkan requires. `None`, without calling `f`, unless `queue` is
+/// a Vulkan queue.
+///
+/// Keep `f` short, and never submit or present through wgpu inside it: the lock is not
+/// reentrant, so that deadlocks. One gap stays: wgpu's `vkDeviceWaitIdle` when it recreates the
+/// window swapchain does not take this lock.
+pub fn with_raw_queue<R>(queue: &wgpu::Queue, f: impl FnOnce(u64) -> R) -> Option<R> {
+    imp::with_raw_queue(queue, f)
+}
+
 #[cfg(not(target_os = "macos"))]
 mod imp {
     use super::{VulkanDeviceIds, VulkanHandles, VulkanRequest, grant, state};
@@ -588,6 +601,12 @@ mod imp {
         })
     }
 
+    pub fn with_raw_queue<R>(queue: &wgpu::Queue, f: impl FnOnce(u64) -> R) -> Option<R> {
+        // Safety: the raw queue is only handed to `f` under the hal queue's lock.
+        let hal = unsafe { queue.as_hal::<Vulkan>() }?;
+        Some(hal.with_raw(|raw| f(raw.as_raw())))
+    }
+
     pub fn format(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> Option<i32> {
         // Safety: a read-only lookup on the adapter.
         let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
@@ -624,6 +643,15 @@ mod imp {
         _image: u64,
         _desc: &wgpu::TextureDescriptor<'_>,
     ) -> Option<wgpu::Texture> {
+        None
+    }
+    pub fn with_raw_queue<R>(_queue: &wgpu::Queue, _f: impl FnOnce(u64) -> R) -> Option<R> {
+        None
+    }
+    pub fn image(_texture: &wgpu::Texture) -> Option<u64> {
+        None
+    }
+    pub fn view(_view: &wgpu::TextureView) -> Option<u64> {
         None
     }
     pub fn format(_adapter: &wgpu::Adapter, _format: wgpu::TextureFormat) -> Option<i32> {
@@ -895,6 +923,37 @@ mod tests {
         drop(view);
         drop(wrapped);
         drop(owner);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_raw_queue_is_lent_between_wgpu_submits() {
+        let Some(adapter) = vulkan_adapter() else {
+            eprintln!("no Vulkan adapter: skipped");
+            return;
+        };
+        let (device, queue) = open_device(&adapter, &Default::default(), &VulkanRequest::default())
+            .unwrap()
+            .unwrap();
+        let raw = with_raw_queue(&queue, |raw| raw).unwrap();
+        assert_eq!(raw, handles(&device).unwrap().queue);
+        // wgpu submits again once the closure returned.
+        queue.submit([device.create_command_encoder(&Default::default()).finish()]);
+        // A submit on another thread waits for the lent queue instead of racing it.
+        let order = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            with_raw_queue(&queue, |_| {
+                let submitter = scope.spawn(|| {
+                    queue.submit([device.create_command_encoder(&Default::default()).finish()]);
+                    order.lock().unwrap().push("submit");
+                });
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                order.lock().unwrap().push("raw");
+                submitter
+            })
+            .unwrap();
+        });
+        assert_eq!(*order.lock().unwrap(), ["raw", "submit"]);
     }
 
     #[cfg(not(target_os = "macos"))]
