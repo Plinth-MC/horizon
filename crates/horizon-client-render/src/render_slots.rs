@@ -56,6 +56,12 @@ pub struct DeviceReady<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
 }
+/// The game is letting go of a device (see `device_closing`): its last renderer is being
+/// dropped, after the device's work finished (or it was lost).
+pub struct DeviceClosing<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+}
 /// A frame is about to be drawn (see `frame_begin`): before its world views are asked for.
 pub struct FrameBegin<'a> {
     pub device: &'a wgpu::Device,
@@ -90,6 +96,8 @@ pub struct Slots {
     pub vulkan_device: fn(&mut vulkan::VulkanRequest),
     /// Told once each time a device opens, before the first frame on it.
     pub device_ready: for<'a> fn(&mut DeviceReady<'a>),
+    /// Told once for each device `device_ready` told of, when the game lets it go.
+    pub device_closing: for<'a> fn(&mut DeviceClosing<'a>),
     /// Whether a mod listens to `frame_begin` or `frame_submitted`: while none does, neither is
     /// called and frames run as without mods.
     pub frame_hooked: fn() -> bool,
@@ -143,6 +151,13 @@ pub fn world_view_drawn(view: &mut WorldViewDrawn<'_>) {
 pub fn device_ready(ready: &mut DeviceReady<'_>) {
     if let Some(s) = SLOTS.get() {
         (s.device_ready)(ready);
+    }
+}
+
+/// Tell the provider's mods that the game lets go of a device it told them of.
+pub fn device_closing(closing: &mut DeviceClosing<'_>) {
+    if let Some(s) = SLOTS.get() {
+        (s.device_closing)(closing);
     }
 }
 

@@ -30,6 +30,10 @@ fn render_provider_is_optional_and_installed_once() {
             READY.fetch_add(1, Ordering::SeqCst);
             assert_eq!(ready.device.limits(), ready.adapter.limits());
         },
+        device_closing: |closing| {
+            CLOSED.fetch_add(1, Ordering::SeqCst);
+            assert!(closing.device.limits().max_texture_dimension_2d > 0);
+        },
         frame_hooked: || true,
         frame_begin: |frame| {
             BEGUN.store(frame.frame as usize, Ordering::SeqCst);
@@ -55,6 +59,7 @@ fn render_provider_is_optional_and_installed_once() {
         world_drawn_hooked: || false,
         vulkan_device: |_| panic!("second provider replaced the first"),
         device_ready: |_| panic!("second provider replaced the first"),
+        device_closing: |_| panic!("second provider replaced the first"),
         frame_hooked: || false,
         frame_begin: |_| panic!("second provider replaced the first"),
         frame_submitted: |_| panic!("second provider replaced the first"),
@@ -67,6 +72,7 @@ fn render_provider_is_optional_and_installed_once() {
 }
 
 static READY: AtomicUsize = AtomicUsize::new(0);
+static CLOSED: AtomicUsize = AtomicUsize::new(0);
 static BEGUN: AtomicUsize = AtomicUsize::new(0);
 static SUBMITTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -89,6 +95,11 @@ fn device_ready_reaches_the_first_provider() {
     });
     assert_eq!(READY.load(Ordering::SeqCst), 1);
     frames_are_numbered_and_end_once(&device, &queue);
+    render_slots::device_closing(&mut render_slots::DeviceClosing {
+        device: &device,
+        queue: &queue,
+    });
+    assert_eq!(CLOSED.load(Ordering::SeqCst), 1);
 }
 
 /// `frame_begin` numbers the frames from 1 and hands the number back for `frame_submitted`,

@@ -32,7 +32,10 @@ generated `vulkan_device` hook notes.
 Implement `device_ready` to get the game's `wgpu::Device` and `wgpu::Queue` (and the adapter
 they came from) once they are open, before the first frame, and again whenever the renderer
 opens a new device. Keep clones for work outside render hooks, such as an OpenXR session on
-`vulkan::handles(device)`. See the generated `device_ready` hook notes.
+`vulkan::handles(device)`. See the generated `device_ready` hook notes. `device_closing`
+pairs with it: it comes once when the game lets that device go (lost, a backend fallback, the
+window closing), after the device's work finished and before the next `device_ready`; destroy
+what you made on it there.
 
 Implement `frame_begin` and `frame_submitted` to pace frames by another clock (an OpenXR
 runtime's). `frame_begin` runs on the render thread before anything of a frame is drawn and

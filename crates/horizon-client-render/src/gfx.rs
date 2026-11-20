@@ -1891,6 +1891,9 @@ pub struct Renderer {
     /// The frame native mods were told began (`native_render::frame_begin`) and not yet told
     /// was submitted.
     mod_frame: Option<u64>,
+    /// Tells native mods when the last renderer on the device drops it (`device_closing`).
+    /// Last, so it drops after the submit thread stopped.
+    device_teardown: Arc<device::DeviceTeardown>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
@@ -2351,6 +2354,7 @@ impl Renderer {
             queue,
             device_lost,
             configured,
+            teardown,
         } = match previous {
             // Reload resources on the same device; replacing live Vulkan
             // devices can invalidate the driver's swapchain state on the same
@@ -2378,6 +2382,7 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                     device_lost: renderer.device_lost.clone(),
                     configured: None,
+                    teardown: renderer.device_teardown.clone(),
                 }
             }
             None => {
@@ -4670,6 +4675,7 @@ impl Renderer {
             capture: None,
             capture_result: None,
             mod_frame: None,
+            device_teardown: teardown,
         })
     }
     /// The first-person hand's quads, which follow `first` quads of the entity buffer.

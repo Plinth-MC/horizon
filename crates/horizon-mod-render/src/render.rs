@@ -8,8 +8,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
 pub use generated::{
-    DeviceReadyEvent, FrameBeginEvent, FrameSubmittedEvent, HandDrawnEvent, RenderNeedsEvent,
-    VulkanDeviceEvent, WorldDrawnEvent, WorldViewDrawnEvent, WorldViewsEvent,
+    DeviceClosingEvent, DeviceReadyEvent, FrameBeginEvent, FrameSubmittedEvent, HandDrawnEvent,
+    RenderNeedsEvent, VulkanDeviceEvent, WorldDrawnEvent, WorldViewDrawnEvent, WorldViewsEvent,
 };
 pub use wgpu;
 
@@ -188,6 +188,19 @@ pub use horizon_client_render::render_slots::DeviceReady;
 #[horizon_mod_api_macros::replaceable]
 pub fn device_ready(ready: &mut DeviceReady<'_>) {
     let _ = ready;
+}
+
+/// The device the game lets go of ([`device_closing`]).
+pub use horizon_client_render::render_slots::DeviceClosing;
+
+/// The game lets go of a device [`device_ready`] told of: once, when the last renderer on it is
+/// dropped (the device was lost, the game falls back to another, the window closes), after its
+/// work finished or it was lost, and before the next `device_ready`. Destroy what was made on it
+/// (an OpenXR session and its swapchains, wrapped textures) and drop the clones kept of it.
+#[inline(never)]
+#[horizon_mod_api_macros::replaceable]
+pub fn device_closing(closing: &mut DeviceClosing<'_>) {
+    let _ = closing;
 }
 
 /// A frame begins ([`frame_begin`]) and was submitted ([`frame_submitted`]).
@@ -514,6 +527,7 @@ pub fn install() {
         world_drawn_hooked,
         vulkan_device: |request| vulkan_device(request),
         device_ready: |ready| device_ready(ready),
+        device_closing: |closing| device_closing(closing),
         frame_hooked,
         frame_begin: |frame| frame_begin(frame),
         frame_submitted: |frame| frame_submitted(frame),

@@ -120,6 +120,27 @@ pub(crate) fn is_software(kind: wgpu::DeviceType) -> bool {
     kind == wgpu::DeviceType::Cpu
 }
 /// A device and what it came from.
+/// Tells native mods (`device_closing`) when the last renderer on a device drops it: every
+/// renderer made on the device (a resource reload's new one too) holds the same one, and the
+/// renderer drops it last, after its submit thread stopped.
+pub(crate) struct DeviceTeardown {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+impl Drop for DeviceTeardown {
+    fn drop(&mut self) {
+        // The mods free what they made on the device (an OpenXR session's swapchain images),
+        // so its work finishes first. A lost device answers at once; a hung one gets 5 s.
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(5)),
+        });
+        native_render::device_closing(&mut native_render::DeviceClosing {
+            device: &self.device,
+            queue: &self.queue,
+        });
+    }
+}
 pub(crate) struct Opened {
     pub(crate) instance: wgpu::Instance,
     pub(crate) surface: Option<wgpu::Surface<'static>>,
@@ -130,6 +151,8 @@ pub(crate) struct Opened {
     /// The window surface's configuration, set on `device` during the search, and the
     /// surface's capabilities on `adapter`. None offscreen.
     pub(crate) configured: Option<(wgpu::SurfaceConfiguration, wgpu::SurfaceCapabilities)>,
+    /// Tells native mods when the device is let go (`device_closing`).
+    pub(crate) teardown: Arc<DeviceTeardown>,
 }
 /// Logs the adapter and records it for crash reports.
 #[derive(Clone, Debug, Default)]
@@ -578,10 +601,15 @@ async fn open_backend(
                     device: &adapted.device,
                     queue: &adapted.queue,
                 });
+                let teardown = Arc::new(DeviceTeardown {
+                    device: adapted.device.clone(),
+                    queue: adapted.queue.clone(),
+                });
                 return Ok(Opened {
                     instance,
                     surface,
                     adapter,
+                    teardown,
                     device: adapted.device,
                     queue: adapted.queue,
                     device_lost: adapted.device_lost,
@@ -703,3 +731,51 @@ const NO_GPU_DRIVER: &str = "No Metal graphics device found";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const NO_GPU_DRIVER: &str = "No Vulkan or OpenGL graphics driver found: Horizon needs the Vulkan loader \
      (libvulkan.so.1) and a Vulkan driver for your GPU (Mesa's, or NVIDIA's), or OpenGL through EGL";
+
+#[cfg(test)]
+mod teardown_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CLOSED: AtomicUsize = AtomicUsize::new(0);
+
+    /// `device_closing` comes once, when the last holder (renderer) of a device drops it. The
+    /// provider installed here is the same as none for everything else in this test binary.
+    #[test]
+    fn device_closing_comes_when_the_last_renderer_lets_go() {
+        native_render::install(native_render::Slots {
+            world_views: |_| {},
+            world_views_hooked: || false,
+            world_view_drawn: |_| {},
+            world_drawn: |_| {},
+            hand_drawn: |_| {},
+            render_needs: |_| {},
+            world_drawn_hooked: || false,
+            vulkan_device: |_| {},
+            device_ready: |_| {},
+            device_closing: |_| {
+                CLOSED.fetch_add(1, Ordering::SeqCst);
+            },
+            frame_hooked: || false,
+            frame_begin: |_| {},
+            frame_submitted: |_| {},
+        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            eprintln!("no adapter: device_closing skipped");
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let first = Arc::new(DeviceTeardown { device, queue });
+        let reloaded = first.clone();
+        drop(first);
+        assert_eq!(
+            CLOSED.load(Ordering::SeqCst),
+            0,
+            "a reload's renderer still holds it"
+        );
+        drop(reloaded);
+        assert_eq!(CLOSED.load(Ordering::SeqCst), 1);
+    }
+}
