@@ -8,8 +8,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
 pub use generated::{
-    HandDrawnEvent, RenderNeedsEvent, VulkanDeviceEvent, WorldDrawnEvent, WorldViewDrawnEvent,
-    WorldViewsEvent,
+    DeviceReadyEvent, HandDrawnEvent, RenderNeedsEvent, VulkanDeviceEvent, WorldDrawnEvent,
+    WorldViewDrawnEvent, WorldViewsEvent,
 };
 pub use wgpu;
 
@@ -175,6 +175,19 @@ pub use horizon_client_render::render_slots::vulkan::{self, VulkanRequest};
 #[horizon_mod_api_macros::replaceable]
 pub fn vulkan_device(request: &mut VulkanRequest) {
     let _ = request;
+}
+
+/// The game's device and queue, and the adapter they were opened from ([`device_ready`]).
+pub use horizon_client_render::render_slots::DeviceReady;
+
+/// The game's device just opened: once at startup and again each time the renderer opens a new
+/// one, before the first frame on it, on every backend. Keep clones of `device` and `queue`
+/// (they are cheap handles) for work outside a render hook, such as creating an OpenXR session
+/// on `vulkan::handles(device)`; drop them when the next `device_ready` comes.
+#[inline(never)]
+#[horizon_mod_api_macros::replaceable]
+pub fn device_ready(ready: &mut DeviceReady<'_>) {
+    let _ = ready;
 }
 
 /// What the mods ask of Vulkan ([`vulkan_device`]).
@@ -470,5 +483,6 @@ pub fn install() {
         },
         world_drawn_hooked,
         vulkan_device: |request| vulkan_device(request),
+        device_ready: |ready| device_ready(ready),
     });
 }

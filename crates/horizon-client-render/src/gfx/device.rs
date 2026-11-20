@@ -571,6 +571,13 @@ async fn open_backend(
         let why = match open_adapter(name, window, surface.as_ref(), &adapter, needs, &vulkan).await
         {
             Ok(adapted) => {
+                // Native mods get the new device before its first frame
+                // (`mod_render::render::device_ready`).
+                native_render::device_ready(&mut native_render::DeviceReady {
+                    adapter: &adapter,
+                    device: &adapted.device,
+                    queue: &adapted.queue,
+                });
                 return Ok(Opened {
                     instance,
                     surface,

@@ -140,6 +140,7 @@ fn install_mod() {
         render_needs: |_| {},
         world_drawn_hooked: || false,
         vulkan_device: |_| {},
+        device_ready: |_| {},
     });
 }
 

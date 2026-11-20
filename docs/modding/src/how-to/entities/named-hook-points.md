@@ -29,6 +29,11 @@ choice stands, with a warning, when no adapter is it. `vulkan::texture_from_vk_i
 an image made outside wgpu (an OpenXR swapchain image) as a `wgpu::Texture`. See the
 generated `vulkan_device` hook notes.
 
+Implement `device_ready` to get the game's `wgpu::Device` and `wgpu::Queue` (and the adapter
+they came from) once they are open, before the first frame, and again whenever the renderer
+opens a new device. Keep clones for work outside render hooks, such as an OpenXR session on
+`vulkan::handles(device)`. See the generated `device_ready` hook notes.
+
 ## Leaving a bed
 
 `player_bed_leave` is a server-side, listen-only notice. It runs before the

@@ -48,6 +48,13 @@ pub struct HandDrawn<'a> {
     pub atlas: Option<&'a wgpu::Texture>,
     pub quad_indices: &'a wgpu::Buffer,
 }
+/// The game's device just opened (see `device_ready`): at startup, and again each time the
+/// renderer opens a new one (a lost device, a backend switch).
+pub struct DeviceReady<'a> {
+    pub adapter: &'a wgpu::Adapter,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+}
 #[derive(Default)]
 pub struct RenderNeeds {
     pub entity_spans: bool,
@@ -64,6 +71,8 @@ pub struct Slots {
     pub world_drawn_hooked: fn() -> bool,
     /// Asked once before the Vulkan instance and device are created.
     pub vulkan_device: fn(&mut vulkan::VulkanRequest),
+    /// Told once each time a device opens, before the first frame on it.
+    pub device_ready: for<'a> fn(&mut DeviceReady<'a>),
 }
 static SLOTS: OnceLock<Slots> = OnceLock::new();
 pub fn install(slots: Slots) {
@@ -102,6 +111,13 @@ pub fn world_views_hooked() -> bool {
 pub fn world_view_drawn(view: &mut WorldViewDrawn<'_>) {
     if let Some(s) = SLOTS.get() {
         (s.world_view_drawn)(view);
+    }
+}
+
+/// Tell the provider's mods that the game's device opened.
+pub fn device_ready(ready: &mut DeviceReady<'_>) {
+    if let Some(s) = SLOTS.get() {
+        (s.device_ready)(ready);
     }
 }
 

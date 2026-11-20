@@ -33,6 +33,7 @@ fn world_view_slot_delivers_only_drawable_requests() {
         },
         world_drawn_hooked: || true,
         vulkan_device: |_| {},
+        device_ready: |_| {},
     });
     assert!(render_slots::world_drawn_hooked());
     assert!(render_slots::needs().entity_spans);
@@ -91,6 +92,7 @@ fn world_view_slot_delivers_only_drawable_requests() {
         render_needs: |_| panic!("second provider replaced the first"),
         world_drawn_hooked: || false,
         vulkan_device: |_| {},
+        device_ready: |_| {},
     });
     assert!(render_slots::world_drawn_hooked());
     assert!(render_slots::needs().world_depth);

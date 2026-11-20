@@ -51,6 +51,7 @@ fn install_observer() {
         render_needs: observe_needs,
         world_drawn_hooked: || true,
         vulkan_device: |_| {},
+        device_ready: |_| {},
     });
 }
 
