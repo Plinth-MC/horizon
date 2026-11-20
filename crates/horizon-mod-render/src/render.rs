@@ -8,8 +8,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
 pub use generated::{
-    DeviceReadyEvent, HandDrawnEvent, RenderNeedsEvent, VulkanDeviceEvent, WorldDrawnEvent,
-    WorldViewDrawnEvent, WorldViewsEvent,
+    DeviceReadyEvent, FrameBeginEvent, FrameSubmittedEvent, HandDrawnEvent, RenderNeedsEvent,
+    VulkanDeviceEvent, WorldDrawnEvent, WorldViewDrawnEvent, WorldViewsEvent,
 };
 pub use wgpu;
 
@@ -188,6 +188,36 @@ pub use horizon_client_render::render_slots::DeviceReady;
 #[horizon_mod_api_macros::replaceable]
 pub fn device_ready(ready: &mut DeviceReady<'_>) {
     let _ = ready;
+}
+
+/// A frame begins ([`frame_begin`]) and was submitted ([`frame_submitted`]).
+pub use horizon_client_render::render_slots::{FrameBegin, FrameSubmitted};
+
+/// A frame begins: called on the render thread before anything of it is drawn and before its
+/// world views are asked for ([`world_views`]), after the previous frame's [`frame_submitted`]
+/// returned. A mod pacing the frame by another clock (an OpenXR runtime's `xrWaitFrame` and
+/// `xrBeginFrame`) blocks here and publishes this frame's view poses and fields of view for its
+/// `world_views` to push. Only called while a mixin replaces this or [`frame_submitted`].
+#[inline(never)]
+#[horizon_mod_api_macros::replaceable]
+pub fn frame_begin(frame: &mut FrameBegin<'_>) {
+    let _ = frame;
+}
+
+/// The frame [`frame_begin`] began was submitted (`drawn`), or not drawn at all: once per
+/// `frame_begin`, before the frame's window image is presented. It may run on the renderer's
+/// submit thread. The place to release images the frame drew into and end an OpenXR frame;
+/// queue work only inside `vulkan::with_raw_queue`.
+#[inline(never)]
+#[horizon_mod_api_macros::replaceable]
+pub fn frame_submitted(frame: &mut FrameSubmitted) {
+    let _ = frame;
+}
+
+/// Whether a mixin replaced [`frame_begin`] or [`frame_submitted`]: while none has, the
+/// renderer calls neither.
+pub fn frame_hooked() -> bool {
+    replaced!(frame_begin) || replaced!(frame_submitted)
 }
 
 /// What the mods ask of Vulkan ([`vulkan_device`]).
@@ -484,5 +514,8 @@ pub fn install() {
         world_drawn_hooked,
         vulkan_device: |request| vulkan_device(request),
         device_ready: |ready| device_ready(ready),
+        frame_hooked,
+        frame_begin: |frame| frame_begin(frame),
+        frame_submitted: |frame| frame_submitted(frame),
     });
 }

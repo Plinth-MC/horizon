@@ -34,6 +34,14 @@ they came from) once they are open, before the first frame, and again whenever t
 opens a new device. Keep clones for work outside render hooks, such as an OpenXR session on
 `vulkan::handles(device)`. See the generated `device_ready` hook notes.
 
+Implement `frame_begin` and `frame_submitted` to pace frames by another clock (an OpenXR
+runtime's). `frame_begin` runs on the render thread before anything of a frame is drawn and
+before `world_views` asks for its views: block there (`xrWaitFrame`, `xrBeginFrame`) and publish
+the frame's view poses. `frame_submitted` follows exactly once per `frame_begin`, after the
+frame's queue submit and before the window's present (`drawn: false` when nothing was
+submitted), possibly on the submit thread: release swapchain images and end the frame there.
+The renderer calls neither while no mixin replaces one. See their generated hook notes.
+
 ## Leaving a bed
 
 `player_bed_leave` is a server-side, listen-only notice. It runs before the

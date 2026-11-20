@@ -34,8 +34,12 @@ fn world_view_slot_delivers_only_drawable_requests() {
         world_drawn_hooked: || true,
         vulkan_device: |_| {},
         device_ready: |_| {},
+        frame_hooked: || false,
+        frame_begin: |_| {},
+        frame_submitted: |_| {},
     });
     assert!(render_slots::world_drawn_hooked());
+    assert!(!render_slots::frame_hooked());
     assert!(render_slots::needs().entity_spans);
     assert!(render_slots::needs().world_depth);
     // Real draw data reaches the installed subscriber; the excluded request never does.
@@ -93,6 +97,9 @@ fn world_view_slot_delivers_only_drawable_requests() {
         world_drawn_hooked: || false,
         vulkan_device: |_| {},
         device_ready: |_| {},
+        frame_hooked: || false,
+        frame_begin: |_| {},
+        frame_submitted: |_| {},
     });
     assert!(render_slots::world_drawn_hooked());
     assert!(render_slots::needs().world_depth);

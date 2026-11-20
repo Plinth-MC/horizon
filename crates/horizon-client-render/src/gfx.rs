@@ -1888,6 +1888,9 @@ pub struct Renderer {
     pub capture: Option<capture::Request>,
     /// Outcome of the last capture: its summary, or the error.
     pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
+    /// The frame native mods were told began (`native_render::frame_begin`) and not yet told
+    /// was submitted.
+    mod_frame: Option<u64>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
@@ -4666,6 +4669,7 @@ impl Renderer {
                 .then(capture::Copies::default),
             capture: None,
             capture_result: None,
+            mod_frame: None,
         })
     }
     /// The first-person hand's quads, which follow `first` quads of the entity buffer.
@@ -7153,6 +7157,15 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
+        // Native mods' frame start (`mod_render::render::frame_begin`), before its world views
+        // are asked for. The queue first waits for the previous frame on the submit thread, so
+        // that frame's `frame_submitted` has returned. (Asked first: the queue's deref waits,
+        // which frames without such mods must not.)
+        self.mod_frame = if native_render::frame_hooked() {
+            native_render::frame_begin(&self.device, &self.queue)
+        } else {
+            None
+        };
         if let Some(request) = self.capture.take() {
             let result = self.write_capture(&request, frame);
             self.capture_result = Some(result.map_err(|e| e.to_string()));
@@ -7187,6 +7200,10 @@ impl Renderer {
             self.queue.submit([encoder.finish()]);
         } else if let Some(copies) = self.take_section_copies() {
             self.queue.submit([copies]);
+        }
+        // A frame that was not drawn still ends for the mods that saw it begin.
+        if let Some(frame) = self.mod_frame.take() {
+            native_render::frame_submitted(frame, false);
         }
         // A scaled screenshot's frame never reached the window.
         rendered.map(|drawn| drawn && scaled.is_none())
@@ -11146,13 +11163,18 @@ impl Renderer {
                 Some((_, Some(post))) => post.submitted(),
                 _ => None,
             };
-            let after = (culling.is_some() || center.is_some()).then(|| {
+            // Native mods hear of the submit there too, before the present.
+            let mod_frame = self.mod_frame.take();
+            let after = (culling.is_some() || center.is_some() || mod_frame.is_some()).then(|| {
                 Box::new(move || {
                     if let Some(read) = culling {
                         read();
                     }
                     if let Some(read) = center {
                         read();
+                    }
+                    if let Some(frame) = mod_frame {
+                        native_render::frame_submitted(frame, true);
                     }
                 }) as submit::AfterSubmit
             });
@@ -11185,6 +11207,10 @@ impl Renderer {
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
         if let Some(read) = after.or_else(|| self.after_submit()) {
             read();
+        }
+        // Native mods (`mod_render::render::frame_submitted`): submitted, not yet presented.
+        if let Some(frame) = self.mod_frame.take() {
+            native_render::frame_submitted(frame, true);
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);

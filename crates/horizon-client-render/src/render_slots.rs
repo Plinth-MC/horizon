@@ -7,6 +7,7 @@ use glam::{DVec3, Mat4};
 /// What native mods may ask of Vulkan before the device opens, and its raw handles after.
 pub use horizon_hdr::vulkan;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 pub struct WorldDrawn<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -55,6 +56,22 @@ pub struct DeviceReady<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
 }
+/// A frame is about to be drawn (see `frame_begin`): before its world views are asked for.
+pub struct FrameBegin<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    /// Counts the frames `frame_begin` was told of, from 1; [`FrameSubmitted::frame`] repeats it.
+    pub frame: u64,
+}
+/// A frame's commands were submitted (see `frame_submitted`), before its window image is
+/// presented. May come on the renderer's submit thread.
+pub struct FrameSubmitted {
+    /// The [`FrameBegin::frame`] it began as.
+    pub frame: u64,
+    /// Whether the frame was drawn and submitted; false when it was not drawn (minimized, a
+    /// lost surface or device, an error), and nothing of it reached the GPU.
+    pub drawn: bool,
+}
 #[derive(Default)]
 pub struct RenderNeeds {
     pub entity_spans: bool,
@@ -73,6 +90,14 @@ pub struct Slots {
     pub vulkan_device: fn(&mut vulkan::VulkanRequest),
     /// Told once each time a device opens, before the first frame on it.
     pub device_ready: for<'a> fn(&mut DeviceReady<'a>),
+    /// Whether a mod listens to `frame_begin` or `frame_submitted`: while none does, neither is
+    /// called and frames run as without mods.
+    pub frame_hooked: fn() -> bool,
+    /// Told at the start of each frame, before its world views are asked for.
+    pub frame_begin: for<'a> fn(&mut FrameBegin<'a>),
+    /// Told once per `frame_begin`, after the frame's submit (or when it was not drawn), before
+    /// its window image is presented.
+    pub frame_submitted: fn(&mut FrameSubmitted),
 }
 static SLOTS: OnceLock<Slots> = OnceLock::new();
 pub fn install(slots: Slots) {
@@ -118,6 +143,33 @@ pub fn world_view_drawn(view: &mut WorldViewDrawn<'_>) {
 pub fn device_ready(ready: &mut DeviceReady<'_>) {
     if let Some(s) = SLOTS.get() {
         (s.device_ready)(ready);
+    }
+}
+
+/// Whether the provider's mods listen to the frame's start and submission.
+pub fn frame_hooked() -> bool {
+    SLOTS.get().is_some_and(|s| (s.frame_hooked)())
+}
+
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Tell the provider's mods a frame begins; the frame's number, to hand to [`frame_submitted`]
+/// exactly once, or None (and no call) while no mod listens.
+pub fn frame_begin(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<u64> {
+    let s = SLOTS.get().filter(|s| (s.frame_hooked)())?;
+    let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    (s.frame_begin)(&mut FrameBegin {
+        device,
+        queue,
+        frame,
+    });
+    Some(frame)
+}
+
+/// Tell the provider's mods that frame `frame` ([`frame_begin`]) was submitted, or not `drawn`.
+pub fn frame_submitted(frame: u64, drawn: bool) {
+    if let Some(s) = SLOTS.get() {
+        (s.frame_submitted)(&mut FrameSubmitted { frame, drawn });
     }
 }
 

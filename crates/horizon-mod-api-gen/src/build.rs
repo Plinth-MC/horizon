@@ -263,7 +263,7 @@ fn render_records_need_no_game_sources() {
             .iter()
             .filter(|item| matches!(item, syn::Item::Struct(_)))
             .count(),
-        7
+        9
     );
     fs::remove_dir_all(root).unwrap();
 }
