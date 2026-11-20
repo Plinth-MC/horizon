@@ -285,6 +285,61 @@ pub fn format(format: wgpu::TextureFormat) -> Option<i32> {
     imp::format(&adapter, format)
 }
 
+/// The texture uses wgpu-hal tracks for a texture made with `usage` in `format`: what
+/// [`texture_from_vk_image`] tells wgpu the image may be used for.
+pub fn hal_uses(usage: wgpu::TextureUsages, format: wgpu::TextureFormat) -> wgpu::TextureUses {
+    let mut uses = wgpu::TextureUses::empty();
+    if usage.contains(wgpu::TextureUsages::COPY_SRC) {
+        uses |= wgpu::TextureUses::COPY_SRC;
+    }
+    if usage.contains(wgpu::TextureUsages::COPY_DST) {
+        uses |= wgpu::TextureUses::COPY_DST;
+    }
+    if usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+        uses |= wgpu::TextureUses::RESOURCE;
+    }
+    if usage.contains(wgpu::TextureUsages::STORAGE_BINDING) {
+        uses |= wgpu::TextureUses::STORAGE_READ_ONLY
+            | wgpu::TextureUses::STORAGE_WRITE_ONLY
+            | wgpu::TextureUses::STORAGE_READ_WRITE;
+    }
+    if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+        uses |= if format.is_depth_stencil_format() {
+            wgpu::TextureUses::DEPTH_STENCIL_READ | wgpu::TextureUses::DEPTH_STENCIL_WRITE
+        } else {
+            wgpu::TextureUses::COLOR_TARGET
+        };
+    }
+    uses
+}
+
+/// A `wgpu::Texture` on `device` over `image`, a `VkImage` made outside wgpu, such as an OpenXR
+/// swapchain image (`xrEnumerateSwapchainImages`). `desc` says what the image is: its size,
+/// format, mip and sample counts, dimension and the uses the mod will put it to. `None` unless
+/// `device` is a Vulkan device.
+///
+/// wgpu never destroys the image: the texture only borrows it. wgpu takes its contents as
+/// undefined when it first uses it, so clear it or draw all of it (a render pass with
+/// `LoadOp::Clear`). wgpu leaves the image in the layout of its last use in a submitted command
+/// buffer: an OpenXR colour swapchain image must be back in `COLOR_ATTACHMENT_OPTIMAL` when it
+/// is released, so make a render pass that draws into it its last use.
+///
+/// # Safety
+/// - `image` is a live `VkImage` of `device`'s `VkDevice` (`handles(device).device`), created
+///   with `desc`'s format (as [`format`] maps it), size, mip count, sample count and dimension,
+///   and with at least the Vulkan usage flags `desc.usage` needs.
+/// - The image outlives the texture, every view of it and every command buffer that uses it
+///   until the GPU is done with them (for a swapchain image: until its `xrReleaseSwapchainImage`
+///   after the submit, and drop the texture before the swapchain is destroyed).
+pub unsafe fn texture_from_vk_image(
+    device: &wgpu::Device,
+    image: u64,
+    desc: &wgpu::TextureDescriptor<'_>,
+) -> Option<wgpu::Texture> {
+    // Safety: forwarded from the caller.
+    unsafe { imp::texture_from_vk_image(device, image, desc) }
+}
+
 #[cfg(not(target_os = "macos"))]
 mod imp {
     use super::{VulkanDeviceIds, VulkanHandles, VulkanRequest, grant, state};
@@ -496,6 +551,43 @@ mod imp {
         Some(unsafe { hal.raw_handle() }.as_raw())
     }
 
+    pub unsafe fn texture_from_vk_image(
+        device: &wgpu::Device,
+        image: u64,
+        desc: &wgpu::TextureDescriptor<'_>,
+    ) -> Option<wgpu::Texture> {
+        let hal_desc = wgpu::hal::TextureDescriptor {
+            label: desc.label,
+            size: desc.size,
+            mip_level_count: desc.mip_level_count,
+            sample_count: desc.sample_count,
+            dimension: desc.dimension,
+            format: desc.format,
+            usage: super::hal_uses(desc.usage, desc.format),
+            memory_flags: wgpu::hal::MemoryFlags::empty(),
+            view_formats: desc.view_formats.to_vec(),
+        };
+        let raw = {
+            // Safety: the hal device is only used to wrap the image; the guard drops here.
+            let hal = unsafe { device.as_hal::<Vulkan>() }?;
+            // Safety: the caller vouches for the image. A drop callback marks it as not
+            // wgpu's: wgpu-hal destroys only images without one.
+            unsafe {
+                hal.texture_from_raw(
+                    vk::Image::from_raw(image),
+                    &hal_desc,
+                    Some(Box::new(|| {})),
+                    wgpu::hal::vulkan::TextureMemory::External,
+                )
+            }
+        };
+        // Safety: a texture of this device's hal, described by `desc`; its contents start
+        // undefined.
+        Some(unsafe {
+            device.create_texture_from_hal::<Vulkan>(raw, desc, wgpu::TextureUses::UNINITIALIZED)
+        })
+    }
+
     pub fn format(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> Option<i32> {
         // Safety: a read-only lookup on the adapter.
         let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
@@ -527,10 +619,11 @@ mod imp {
     pub fn device_ids(_adapter: &wgpu::Adapter) -> Option<VulkanDeviceIds> {
         None
     }
-    pub fn image(_texture: &wgpu::Texture) -> Option<u64> {
-        None
-    }
-    pub fn view(_view: &wgpu::TextureView) -> Option<u64> {
+    pub unsafe fn texture_from_vk_image(
+        _device: &wgpu::Device,
+        _image: u64,
+        _desc: &wgpu::TextureDescriptor<'_>,
+    ) -> Option<wgpu::Texture> {
         None
     }
     pub fn format(_adapter: &wgpu::Adapter, _format: wgpu::TextureFormat) -> Option<i32> {
@@ -708,6 +801,100 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wanted_adapter(&adapters, &elsewhere), None);
+    }
+
+    #[test]
+    fn texture_usages_map_to_the_uses_wgpu_hal_tracks() {
+        use wgpu::{TextureFormat as F, TextureUsages as U, TextureUses as H};
+        assert_eq!(
+            hal_uses(U::RENDER_ATTACHMENT | U::COPY_DST, F::Rgba8UnormSrgb),
+            H::COLOR_TARGET | H::COPY_DST
+        );
+        assert_eq!(
+            hal_uses(U::RENDER_ATTACHMENT, F::Depth32Float),
+            H::DEPTH_STENCIL_READ | H::DEPTH_STENCIL_WRITE
+        );
+        assert_eq!(
+            hal_uses(U::TEXTURE_BINDING | U::COPY_SRC, F::Bgra8Unorm),
+            H::RESOURCE | H::COPY_SRC
+        );
+        assert!(hal_uses(U::STORAGE_BINDING, F::Rgba16Float).contains(H::STORAGE_READ_WRITE));
+        assert!(hal_uses(U::empty(), F::Rgba8Unorm).is_empty());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn an_image_made_elsewhere_is_drawn_into_as_a_texture() {
+        let Some(adapter) = vulkan_adapter() else {
+            eprintln!("no Vulkan adapter: skipped");
+            return;
+        };
+        let (device, queue) = open_device(&adapter, &Default::default(), &VulkanRequest::default())
+            .unwrap()
+            .unwrap();
+        let desc = wgpu::TextureDescriptor {
+            label: Some("external"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        // The "runtime's" image: a texture of wgpu's own, so the test needs no raw Vulkan.
+        let owner = device.create_texture(&desc);
+        let raw = image(&owner).unwrap().image;
+        // Safety: `owner` keeps the image alive past `wrapped` and the submit below.
+        let wrapped = unsafe { texture_from_vk_image(&device, raw, &desc) }.unwrap();
+        assert_eq!(image(&wrapped).unwrap().image, raw);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let view = wrapped.create_view(&Default::default());
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        }));
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wrapped.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(4),
+                },
+            },
+            desc.size,
+        );
+        queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(
+            &buffer.slice(..).get_mapped_range().unwrap()[..4],
+            &[255, 0, 0, 255]
+        );
+        drop(view);
+        drop(wrapped);
+        drop(owner);
     }
 
     #[cfg(not(target_os = "macos"))]

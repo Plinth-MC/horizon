@@ -25,8 +25,9 @@ a latency layer or an OpenXR runtime needs them). Each is enabled only where the
 driver offers it; read what was enabled from `vulkan::granted()` and the device's raw
 handles from `vulkan::handles(device)`. A mod that must render on one GPU (an OpenXR
 runtime's) names it in `physical_device` by its device UUID or LUID; the game's own
-choice stands, with a warning, when no adapter is it. See the generated `vulkan_device`
-hook notes.
+choice stands, with a warning, when no adapter is it. `vulkan::texture_from_vk_image` wraps
+an image made outside wgpu (an OpenXR swapchain image) as a `wgpu::Texture`. See the
+generated `vulkan_device` hook notes.
 
 ## Leaving a bed
 

@@ -33,6 +33,12 @@ The raw objects come from `mod_render::render::vulkan`, which keeps the unsafe c
   through `get_instance_proc_addr`.
 - `vulkan::image(&texture)`: the `VkImage` and `VkFormat` of a `wgpu::Texture`; `vulkan::view(&view)` a
   `VkImageView`; `vulkan::format(format)` the `VkFormat` a `wgpu::TextureFormat` is created with.
+- `unsafe vulkan::texture_from_vk_image(&device, image, &desc)`: a `wgpu::Texture` over a `VkImage` made outside
+  wgpu, such as an OpenXR swapchain image, described by a `wgpu::TextureDescriptor` (size, format, mips, samples,
+  usage). wgpu never destroys the image and takes its contents as undefined at first; it leaves the image in the
+  layout of its last use, so make a render pass into it the last use when the other side expects
+  `COLOR_ATTACHMENT_OPTIMAL` (OpenXR does on `xrReleaseSwapchainImage`). Keep the image alive until the GPU is done
+  with the texture.
 
 The game owns all of them: never destroy one, and use them only while the `wgpu::Device` or texture lives. Submit to
 the queue only on the render thread, from a render hook: Vulkan queues need external synchronisation, and the game
